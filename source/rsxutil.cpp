@@ -346,7 +346,6 @@ void initScreen()
         buffer = rsxMemalign(64,(display_height*color_pitch));
         color_buffer[i] = (u32*) buffer;
         rsxAddressToOffset(buffer,&color_offset[i]);
-        printf("fb[%d]: %p (%08x) [%dx%d] %d\n", i, buffer, color_offset[i], display_width, display_height, color_pitch);
         gcmSetDisplayBuffer(i,color_offset[i],color_pitch,display_width,display_height);
     }
 
