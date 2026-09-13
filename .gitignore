@@ -20,3 +20,6 @@ compile_commands.json
 
 # CHIP-8 ROMs (third-party binary game/test files, not project source)
 roms/
+
+# Claude Code project instructions (kept locally, not tracked)
+/CLAUDE.md
