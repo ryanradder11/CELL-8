@@ -267,15 +267,23 @@ void initRenderTarget()
 	surface.colorPitch[0]	= color_pitch;
 
     // We only actually render to target 0; the remaining multi-render-
-    // target (MRT) slots just need placeholder/valid values.
+    // target (MRT) slots are left unused (offset 0), matching known-working
+    // PSL1GHT samples -- aliasing them onto color_offset[curr_fb] with a
+    // mismatched pitch (as this used to) is placeholder-only for CPU pixel
+    // writes, which never touch these slots, but is a bogus surface
+    // description the moment real GPU 3D rendering is involved.
     for(u32 i=1; i< GCM_MAX_MRT_COUNT;i++) {
         surface.colorLocation[i]	= GCM_LOCATION_RSX;
-        surface.colorOffset[i]		= color_offset[curr_fb];
+        surface.colorOffset[i]		= 0;
         surface.colorPitch[i]		= 64;
     }
 
 	// Shared depth/stencil buffer (same one reused across all color buffers).
-	surface.depthFormat		= GCM_SURFACE_ZETA_Z16;
+	// Z24S8, not Z16: matches the locally-verified working PSL1GHT rsxtest
+	// sample (shader-triangle-test/rsxtest-bisect), which also clears depth
+	// with 0xffffff00 (24-bit Z + 8-bit stencil). The depth buffer is
+	// already allocated at 4 bytes/pixel (zs_depth = 4), so it fits.
+	surface.depthFormat		= GCM_SURFACE_ZETA_Z24S8;
 	surface.depthLocation	= GCM_LOCATION_RSX;
 	surface.depthOffset		= depth_offset;
 	surface.depthPitch		= depth_pitch;
@@ -325,7 +333,7 @@ void initScreen()
 
     waitRSXIdle(); // make sure RSX is quiet before we start allocating
 
-    gcmSetFlipMode(GCM_FLIP_HSYNC); // flip in sync with the display's hsync
+    gcmSetFlipMode(GCM_FLIP_VSYNC); // flip in sync with the display's vsync -- matches the known-working rsxtest sample
 
     // Allocate one color buffer per ring-buffer slot in RSX-local video
     // memory, convert each to an RSX offset, and register it with GCM as
@@ -338,7 +346,6 @@ void initScreen()
         buffer = rsxMemalign(64,(display_height*color_pitch));
         color_buffer[i] = (u32*) buffer;
         rsxAddressToOffset(buffer,&color_offset[i]);
-        printf("fb[%d]: %p (%08x) [%dx%d] %d\n", i, buffer, color_offset[i], display_width, display_height, color_pitch);
         gcmSetDisplayBuffer(i,color_offset[i],color_pitch,display_width,display_height);
     }
 

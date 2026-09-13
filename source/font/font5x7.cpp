@@ -27,6 +27,18 @@ static const Glyph GLYPH_MINUS = {
 	0b00000,
 };
 
+// Right-pointing chevron, used by the ROM menu as a selection marker --
+// not a real character, just a convenient glyph for '>'.
+static const Glyph GLYPH_ARROW = {
+	0b10000,
+	0b01000,
+	0b00100,
+	0b00010,
+	0b00100,
+	0b01000,
+	0b10000,
+};
+
 static const Glyph GLYPH_B = {
 	0b11110,
 	0b10001,
@@ -427,6 +439,7 @@ static const Glyph *getGlyph(char c)
 		case '8': return &GLYPH_8;
 		case '9': return &GLYPH_9;
 		case '-': return &GLYPH_MINUS;
+		case '>': return &GLYPH_ARROW;
 		default:  return &GLYPH_SPACE; // includes ' ' and anything unmapped
 	}
 }
@@ -457,6 +470,31 @@ void drawText5x7(u32 *buffer, u32 pitchPixels, s32 x, s32 y, const char *text, u
 		}
 
 		penX += (FONT_GLYPH_W + GLYPH_SPACING) * scale;
+	}
+}
+
+void drawText5x7ToGrid(u8 *grid, u32 gridWidth, u32 gridHeight, s32 x, s32 y, const char *text)
+{
+	s32 penX = x;
+
+	for (const char *p = text; *p; p++) {
+		const Glyph *glyph = getGlyph(*p);
+
+		for (s32 row = 0; row < FONT_GLYPH_H; row++) {
+			u8 bits = (*glyph)[row];
+			for (s32 col = 0; col < FONT_GLYPH_W; col++) {
+				if (!(bits & (1 << (FONT_GLYPH_W - 1 - col))))
+					continue;
+
+				s32 gx = penX + col;
+				s32 gy = y + row;
+				if (gx >= 0 && gx < (s32) gridWidth && gy >= 0 && gy < (s32) gridHeight) {
+					grid[gy * gridWidth + gx] = 1;
+				}
+			}
+		}
+
+		penX += FONT_GLYPH_W + GLYPH_SPACING;
 	}
 }
 

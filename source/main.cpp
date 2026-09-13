@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <malloc.h>
 #include <ppu-types.h>
 
 #include <sys/process.h>
@@ -13,6 +14,7 @@
 #include "chip8/chip8.h"
 #include "romlist/romlist.h"
 #include "sound/sound.h"
+#include "screen/screen.h"
 
 SYS_PROCESS_PARAM(1001, 0x100000);
 
@@ -35,21 +37,6 @@ static void sysutil_exit_callback(u64 status, u64 param, void *usrdata)
 		running = 0;
 	}
 }
-}
-
-static void drawChip8Display(u32 *buffer, u32 pitchPixels, const Chip8 &chip, s32 originX, s32 originY, u32 scale)
-{
-	for (u32 y = 0; y < 32; y++) {
-		u32 color = 0;
-		for (u32 x = 0; x < 64; x++) {
-			color = chip.gfx[y * 64 + x] ? 0x00ffffff : 0x00000000;
-			for (u32 dy = 0; dy < scale; dy++) {
-				for (u32 dx = 0; dx < scale; dx++) {
-					buffer[(originY + y * scale + dy) * pitchPixels + (originX + x * scale + dx)] = color;
-				}
-			}
-		}
-	}
 }
 
 static void updateChip8Keys(Chip8 &chip, const padData &paddata)
@@ -102,6 +89,9 @@ int main(void)
 
 	ioPadInit(7);
 
+	screenInit();
+	setRenderTarget(curr_fb);
+
 	// Populate ROM_LIST by scanning the HDD (creating that folder if it's not present)
 	romlist_init();
 	if (mainDebug) {
@@ -153,10 +143,6 @@ int main(void)
 	// previously-played ROM stays highlighted instead of resetting to 0.
 	int selectedRom = 0;
 
-	const u32 chip8Scale = 10; // matches the original's drawDisplay() default
-	s32 chip8OriginX = (display_width - 64 * chip8Scale) / 2;
-	s32 chip8OriginY = (display_height - 32 * chip8Scale) / 2;
-
 	// DEBUG: print pad connection status once, so we know whether RPCS3
 	// even reports a connected pad.
 	if (mainDebug) {
@@ -170,7 +156,6 @@ int main(void)
 	// Outer loop: pick a ROM in the menu, play it until SELECT sends us
 	// back here to pick another one (or the app is asked to exit).
 	while (running) {
-
 		bool prevUp = false, prevDown = false, prevCross = false;
 		ioPadGetInfo(&padinfo);
 		for (int i = 0; i < MAX_PADS; i++) {
@@ -211,21 +196,17 @@ int main(void)
 			prevDown = curDown;
 			prevCross = curCross;
 
-			u32 *buf = color_buffer[curr_fb];
-			u32 pitchPixels = color_pitch / 4;
-			memset(buf, 0, display_height * color_pitch);
+			static u8 menuGrid[SCREEN_MAX_COLS * SCREEN_MAX_ROWS];
+			memset(menuGrid, 0, sizeof(menuGrid));
 
 			const char *menuTitle = "SELECT ROM";
-			const u32 menuTitleScale = 4;
-			const u32 entryScale = 2;
-			s32 menuTitleX = (display_width - textWidth5x7(menuTitle, menuTitleScale)) / 2;
-			drawText5x7(buf, pitchPixels, menuTitleX, 40, menuTitle, 0x00ffffff, menuTitleScale);
+			drawText5x7ToGrid(menuGrid, SCREEN_MAX_COLS, SCREEN_MAX_ROWS, (SCREEN_MAX_COLS - textWidth5x7(menuTitle, 1)) / 2, 0, menuTitle);
 
-			s32 entryY = 120;
-			s32 entryLineHeight = (7 + 4) * entryScale; // glyphs are 7px tall (font5x7.cpp), + 4px gap
+			const int VISIBLE_ROWS = 14;
+			const s32 entryY = 8;
+			const s32 entryLineHeight = 8; // 7 glyph rows + 1 gap
+			const s32 nameMaxChars = 38;   // ~40 chars/line - 2 for the "> "/"  " prefix
 
-			// centered around selectedRom (clamped at the list's ends).
-			const int VISIBLE_ROWS = 12;
 			int scrollOffset = selectedRom - VISIBLE_ROWS / 2;
 			if (scrollOffset > ROM_COUNT - VISIBLE_ROWS) scrollOffset = ROM_COUNT - VISIBLE_ROWS;
 			if (scrollOffset < 0) scrollOffset = 0;
@@ -234,11 +215,16 @@ int main(void)
 				int i = scrollOffset + row;
 				if (i >= ROM_COUNT) break;
 
-				u32 color = (i == selectedRom) ? 0x00ffffff : 0x00808080;
-				s32 entryX = (display_width - textWidth5x7(ROM_LIST[i].name, entryScale)) / 2;
-				drawText5x7(buf, pitchPixels, entryX, entryY + row * entryLineHeight, ROM_LIST[i].name, color, entryScale);
+				char entry[2 + nameMaxChars + 1];
+				entry[0] = (i == selectedRom) ? '>' : ' ';
+				entry[1] = ' ';
+				strncpy(entry + 2, ROM_LIST[i].name, nameMaxChars);
+				entry[2 + nameMaxChars] = '\0';
+
+				drawText5x7ToGrid(menuGrid, SCREEN_MAX_COLS, SCREEN_MAX_ROWS, 0, entryY + row * entryLineHeight, entry);
 			}
 
+			screenDraw(menuGrid, SCREEN_MAX_COLS, SCREEN_MAX_ROWS, 0);
 			flip();
 		}
 
@@ -247,6 +233,9 @@ int main(void)
 		Chip8 chip = {};
 		chip.pc = 0x200; // Start of most CHIP-8 programs
 		loadROM(ROM_LIST[selectedRom].path, chip);
+
+		static const u32 kMaxBrightness = 3; // frames a cell fades over after turning off
+		u8 sBrightness[64 * 32] = {};
 
 		bool prevSelect = false;
 		ioPadGetInfo(&padinfo);
@@ -281,20 +270,23 @@ int main(void)
 				break; // skip simulating/rendering a frame we're about to leave
 			}
 
-			emulateCycle(chip);
-			emulateCycle(chip);
+			for (int cycle = 0; cycle < 3; cycle++) {
+				emulateCycle(chip);
+			}
 
 			// 60Hz timers, decremented once per rendered frame.
 			if (chip.delay_timer > 0) chip.delay_timer--;
 			if (chip.sound_timer > 0) chip.sound_timer--;
 			soundSetActive(chip.sound_timer > 0);
 
-			// Redrawn every frame regardless of drawFlag (unlike the original):
-			u32 *buf = color_buffer[curr_fb];
-			u32 pitchPixels = color_pitch / 4;
-			memset(buf, 0, display_height * color_pitch);
+			for (u32 i = 0; i < 64 * 32; i++) {
+				if (chip.gfx[i])
+					sBrightness[i] = kMaxBrightness;
+				else if (sBrightness[i] > 0)
+					sBrightness[i]--;
+			}
 
-			drawChip8Display(buf, pitchPixels, chip, chip8OriginX, chip8OriginY, chip8Scale);
+			screenDraw(sBrightness, 64, 32, 0, kMaxBrightness);
 
 			chip.drawFlag = false;
 

@@ -13,8 +13,9 @@
  * the pixel data to the buffer which is not being displayed"), so this
  * sidesteps the shader pipeline entirely.
  *
- * Only covers the characters actually used by Cell-8's intro screen:
- * A-Z, 0-9, '-', space. Unknown characters render as blank space.
+ * Only covers the characters actually used by Cell-8's intro/menu screens:
+ * A-Z, 0-9, '-', '>' (used as a selection marker, not a real character),
+ * space. Unknown characters render as blank space.
  */
 
 // Draws `text` (upper-case only) into `buffer` starting at pixel (x, y).
@@ -27,5 +28,13 @@ void drawText5x7(u32 *buffer, u32 pitchPixels, s32 x, s32 y,
 // Width in pixels that drawText5x7() would need to render `text` at the
 // given scale -- useful for centering text on screen.
 s32 textWidth5x7(const char *text, u32 scale);
+
+// Same glyph data as drawText5x7(), but sets cells directly in a
+// screenDraw()-style grid buffer (see screen.h) instead of writing pixels
+// into a framebuffer -- one grid cell per font "dot", no `scale` (the grid
+// is already low-resolution, e.g. 64x32 for the CHIP-8 display). Cells
+// outside [0,gridWidth)x[0,gridHeight) are silently skipped. Text is
+// UPPER-CASE only, same limited character set as drawText5x7().
+void drawText5x7ToGrid(u8 *grid, u32 gridWidth, u32 gridHeight, s32 x, s32 y, const char *text);
 
 #endif // FONT5X7_H
