@@ -6,6 +6,7 @@
 #include <ppu-types.h>
 
 #include <sys/process.h>
+#include <sys/systime.h>
 #include <sysutil/sysutil.h>
 #include <io/pad.h>
 
@@ -20,6 +21,7 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 
 static u32 running = 0;
 static bool mainDebug = false;
+static bool perfDebug = false;
 
 extern "C" {
 static void program_exit_callback()
@@ -237,6 +239,17 @@ int main(void)
 		static const u32 kMaxBrightness = 3; // frames a cell fades over after turning off
 		u8 sBrightness[64 * 32] = {};
 
+		// Temporary diagnostic instrumentation to find the cause of
+		// reported slowdown (e.g. a "bomb" explosion drawing lots of
+		// cells at once) -- prints a summary every 30 frames instead of
+		// every frame, since per-frame printf spam would itself skew the
+		// timing being measured. Safe to remove/gate behind mainDebug
+		// once the cause is confirmed.
+		u32 perfFrameCounter = 0;
+		s64 perfTotalMicrosMax = 0, perfDrawMicrosMax = 0;
+		s64 perfTotalMicrosSum = 0, perfDrawMicrosSum = 0;
+		u32 perfLitCellsMax = 0;
+
 		bool prevSelect = false;
 		ioPadGetInfo(&padinfo);
 		for (int i = 0; i < MAX_PADS; i++) {
@@ -249,6 +262,9 @@ int main(void)
 		bool backToMenu = false;
 
 		while (running && !backToMenu) {
+			s64 tFrameStart = 0;
+			if (perfDebug) tFrameStart = sysGetSystemTime(); // microseconds
+
 			sysUtilCheckCallback();
 
 			bool curSelect = false;
@@ -286,11 +302,61 @@ int main(void)
 					sBrightness[i]--;
 			}
 
+			s64 tBeforeDraw = 0;
+			if (perfDebug) tBeforeDraw = sysGetSystemTime();
+
 			screenDraw(sBrightness, 64, 32, 0, kMaxBrightness);
+
+			s64 tAfterDraw = 0;
+			if (perfDebug) tAfterDraw = sysGetSystemTime();
 
 			chip.drawFlag = false;
 
 			flip();
+
+			if (perfDebug) {
+				s64 tAfterFlip = sysGetSystemTime();
+
+				// Empirical test for "many cells on screen at once causes
+				// slowdown": counted here (not inside screen.cpp) so this
+				// stays pure call-site instrumentation with no API changes.
+				u32 litCells = 0;
+				for (u32 i = 0; i < 64 * 32; i++) {
+					if (sBrightness[i] > 0)
+						litCells++;
+				}
+
+				// drawMicros is screenDraw()'s CPU-side cost only (building
+				// vertices + submitting GPU commands) -- rsxDrawVertexArray
+				// is asynchronous, so this does NOT include actual GPU
+				// render time. Still useful: vertex-building cost scales
+				// with litCells, and draw-call submission overhead scales
+				// with how many brightness passes ran (up to kMaxBrightness).
+				s64 drawMicros = tAfterDraw - tBeforeDraw;
+				s64 totalMicros = tAfterFlip - tFrameStart;
+
+				if (drawMicros > perfDrawMicrosMax) perfDrawMicrosMax = drawMicros;
+				if (totalMicros > perfTotalMicrosMax) perfTotalMicrosMax = totalMicros;
+				if (litCells > perfLitCellsMax) perfLitCellsMax = litCells;
+				perfDrawMicrosSum += drawMicros;
+				perfTotalMicrosSum += totalMicros;
+				perfFrameCounter++;
+
+				if (perfFrameCounter >= 30) {
+					printf("[perf] avg=%.2fms max=%.2fms drawAvg=%.2fms drawMax=%.2fms litMax=%u\n",
+						(perfTotalMicrosSum / (f32) perfFrameCounter) / 1000.0f,
+						perfTotalMicrosMax / 1000.0f,
+						(perfDrawMicrosSum / (f32) perfFrameCounter) / 1000.0f,
+						perfDrawMicrosMax / 1000.0f,
+						perfLitCellsMax);
+					perfFrameCounter = 0;
+					perfTotalMicrosMax = 0;
+					perfDrawMicrosMax = 0;
+					perfTotalMicrosSum = 0;
+					perfDrawMicrosSum = 0;
+					perfLitCellsMax = 0;
+				}
+			}
 		}
 	}
 
