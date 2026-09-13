@@ -95,66 +95,60 @@ void screenInit()
 	}
 }
 
-// Rewrites this frame's vertex buffer slot to contain only the "lit"
-// cells from `pixels`
-// (row-major, row 0 = top, matching Chip8::gfx -- see screen.h), and
-// returns how many vertices were written (always a multiple of 6, at most
-// screenMaxVertexCount). Cells that are "off" contribute nothing, so the
-// GPU never draws them -- the cleared black background shows through
-// instead.
-//
-// Each cell's on-screen position is recomputed from scratch every call
-// instead of being cached from screenInit() -- even at the largest
-// supported grid (SCREEN_MAX_COLS*SCREEN_MAX_ROWS, see screen.h), that's
-// simple arithmetic cheap enough on the PPU that caching it isn't worth
-// the extra bookkeeping.
-static u32 buildVisibleGrid(const u8 *pixels, u32 gridCols, u32 gridRows, u32 gapPixels)
+static void buildVisibleGrid(const u8 *pixels, u32 gridCols, u32 gridRows, u32 gapPixels,
+                              u32 maxLevel, u32 outStart[], u32 outCount[])
 {
 	Vertex *nextVertex = sVertexBuffer[curr_fb];  // write cursor into this frame's slot
 
-	for (u32 row = 0; row < gridRows; row++) {
+	for (u32 levelIndex = 0; levelIndex < maxLevel; levelIndex++) {
+		u32 level = maxLevel - levelIndex;  // maxLevel, maxLevel-1, ..., 1
+		Vertex *levelStartVertex = nextVertex;
+		outStart[level] = (u32)(nextVertex - sVertexBuffer[curr_fb]);
 
-		u32 rowBottomPixels = (row * display_height) / gridRows;
-		u32 rowTopPixels = ((row + 1) * display_height) / gridRows;
+		for (u32 row = 0; row < gridRows; row++) {
 
-
-		u32 pixelsRow = gridRows - 1 - row;
-
-		for (u32 col = 0; col < gridCols; col++) {
-			if (!pixels[pixelsRow * gridCols + col])
-				continue;  // this cell is "off" -- write no vertices for it
-
-			u32 colLeftPixels = (col * display_width) / gridCols;
-			u32 colRightPixels = ((col + 1) * display_width) / gridCols;
+			u32 rowBottomPixels = (row * display_height) / gridRows;
+			u32 rowTopPixels = ((row + 1) * display_height) / gridRows;
 
 
-			f32 leftPixels = (f32)(colLeftPixels + gapPixels);
-			f32 rightPixels = (f32)(colRightPixels - gapPixels);
-			f32 bottomPixels = (f32)(rowBottomPixels + gapPixels);
-			f32 topPixels = (f32)(rowTopPixels - gapPixels);
+			u32 pixelsRow = gridRows - 1 - row;
+
+			for (u32 col = 0; col < gridCols; col++) {
+				if (pixels[pixelsRow * gridCols + col] != level)
+					continue;  // belongs to a different level, or fully off (0)
+
+				u32 colLeftPixels = (col * display_width) / gridCols;
+				u32 colRightPixels = ((col + 1) * display_width) / gridCols;
 
 
-			f32 left = (leftPixels / display_width) * 2.0f - 1.0f;
-			f32 right = (rightPixels / display_width) * 2.0f - 1.0f;
-			f32 bottom = (bottomPixels / display_height) * 2.0f - 1.0f;
-			f32 top = (topPixels / display_height) * 2.0f - 1.0f;
+				f32 leftPixels = (f32)(colLeftPixels + gapPixels);
+				f32 rightPixels = (f32)(colRightPixels - gapPixels);
+				f32 bottomPixels = (f32)(rowBottomPixels + gapPixels);
+				f32 topPixels = (f32)(rowTopPixels - gapPixels);
 
-			Vertex topLeft     = { { left,  top,    0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } };
-			Vertex bottomLeft  = { { left,  bottom, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } };
-			Vertex bottomRight = { { right, bottom, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } };
-			Vertex topRight    = { { right, top,    0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } };
 
-			// Two triangles
-			*nextVertex++ = topLeft;
-			*nextVertex++ = bottomLeft;
-			*nextVertex++ = bottomRight;
-			*nextVertex++ = topLeft;
-			*nextVertex++ = bottomRight;
-			*nextVertex++ = topRight;
+				f32 left = (leftPixels / display_width) * 2.0f - 1.0f;
+				f32 right = (rightPixels / display_width) * 2.0f - 1.0f;
+				f32 bottom = (bottomPixels / display_height) * 2.0f - 1.0f;
+				f32 top = (topPixels / display_height) * 2.0f - 1.0f;
+
+				Vertex topLeft     = { { left,  top,    0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f } };
+				Vertex bottomLeft  = { { left,  bottom, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f } };
+				Vertex bottomRight = { { right, bottom, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f } };
+				Vertex topRight    = { { right, top,    0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f } };
+
+				// Two triangles
+				*nextVertex++ = topLeft;
+				*nextVertex++ = bottomLeft;
+				*nextVertex++ = bottomRight;
+				*nextVertex++ = topLeft;
+				*nextVertex++ = bottomRight;
+				*nextVertex++ = topRight;
+			}
 		}
-	}
 
-	return (u32)(nextVertex - sVertexBuffer[curr_fb]);
+		outCount[level] = (u32)(nextVertex - levelStartVertex);
+	}
 }
 
 static void setupRenderState()
@@ -163,11 +157,6 @@ static void setupRenderState()
 	rsxSetColorMask(gGcmContext, GCM_COLOR_MASK_B | GCM_COLOR_MASK_G | GCM_COLOR_MASK_R | GCM_COLOR_MASK_A);
 	rsxSetColorMaskMrt(gGcmContext, 0);
 
-	// The viewport maps clip-space coordinates (-1..1) onto actual pixel
-	// coordinates. Note the negated height in scale[1]: RSX's clip space
-	// has +Y pointing up, but the framebuffer's Y=0 is the top row, so this
-	// flip is what makes "up" in our vertex data appear at the top of the
-	// screen instead of the bottom.
 	u16 x = 0, y = 0, w = (u16) display_width, h = (u16) display_height;
 	f32 minDepth = 0.0f, maxDepth = 1.0f;
 	f32 scale[4] = { w * 0.5f, h * -0.5f, (maxDepth - minDepth) * 0.5f, 0.0f };
@@ -176,92 +165,65 @@ static void setupRenderState()
 	rsxSetViewport(gGcmContext, x, y, w, h, minDepth, maxDepth, scale, offset);
 	rsxSetScissor(gGcmContext, x, y, w, h);
 
-	// Depth testing: lets closer squares draw over farther ones. Not
-	// strictly needed since every square is at z=0, but keeping it enabled
-	// matches the known-working sample this was ported from.
 	rsxSetDepthTestEnable(gGcmContext, GCM_TRUE);
 	rsxSetDepthFunc(gGcmContext, GCM_LESS);
 	rsxSetShadeModel(gGcmContext, GCM_SHADE_MODEL_SMOOTH);
 	rsxSetDepthWriteEnable(gGcmContext, 1);
-	// Counter-clockwise vertex winding counts as "front facing" -- has to
-	// match the winding order used when building the grid in
-	// buildVisibleGrid() above.
+
 	rsxSetFrontFace(gGcmContext, GCM_FRONTFACE_CCW);
 }
 
-void screenDraw(const u8 *pixels, u32 gridCols, u32 gridRows, u32 gapPixels)
+void screenDraw(const u8 *pixels, u32 gridCols, u32 gridRows, u32 gapPixels, u32 maxLevel)
 {
-	// Rebuild this frame's vertex data first -- everything below just
-	// draws whatever is currently sitting in sVertexBuffer[curr_fb].
-	// buildVisibleGrid() and the bind calls further down both read
-	// curr_fb; that's safe because curr_fb only changes inside flip(),
-	// which the caller invokes *after* screenDraw() returns -- so it's
-	// stable for this whole call.
-	u32 visibleVertexCount = buildVisibleGrid(pixels, gridCols, gridRows, gapPixels);
+	u32 levelStart[maxLevel + 1];
+	u32 levelCount[maxLevel + 1];
+	buildVisibleGrid(pixels, gridCols, gridRows, gapPixels, maxLevel, levelStart, levelCount);
 
 	setupRenderState();
 
 	// Wipe the framebuffer (to black) and depth/stencil buffers before
-	// drawing this frame's squares.
 	rsxSetClearColor(gGcmContext, 0x00000000);
 	rsxSetClearDepthStencil(gGcmContext, 0xffffff00);
 	rsxClearSurface(gGcmContext, GCM_CLEAR_R | GCM_CLEAR_G | GCM_CLEAR_B | GCM_CLEAR_A | GCM_CLEAR_S | GCM_CLEAR_Z);
 
 	rsxSetZMinMaxControl(gGcmContext, GCM_FALSE, GCM_TRUE, GCM_FALSE);
 
-	// One clip plane per render target slot (0..7) -- tells RSX the pixel
-	// bounds it's allowed to draw into.
 	for (u32 i = 0; i < 8; i++)
 		rsxSetViewportClip(gGcmContext, i, display_width, display_height);
 
-	// Tell the GPU where to find each vertex attribute in
-	// sVertexBuffer[curr_fb]: position, normal, and texcoord are
-	// interleaved per-vertex (see the Vertex struct), so each call passes
-	// the byte offset of that field plus sizeof(Vertex) as the stride to
-	// the next vertex.
-	// Note: GCM_VERTEX_ATTRIB_POS/NORMAL/TEX0 are fixed hardware attribute
-	// slot numbers, exactly as the working sample binds them -- not the
-	// index rsxVertexProgramGetAttrib() would report back for these names.
 	rsxBindVertexArrayAttrib(gGcmContext, GCM_VERTEX_ATTRIB_POS, 0, sVertexBufferOffset[curr_fb] + offsetof(Vertex, pos), sizeof(Vertex), 3, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
 	rsxBindVertexArrayAttrib(gGcmContext, GCM_VERTEX_ATTRIB_NORMAL, 0, sVertexBufferOffset[curr_fb] + offsetof(Vertex, normal), sizeof(Vertex), 3, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
 	rsxBindVertexArrayAttrib(gGcmContext, GCM_VERTEX_ATTRIB_TEX0, 0, sVertexBufferOffset[curr_fb] + offsetof(Vertex, texcoord), sizeof(Vertex), 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
 
-	// Load the vertex shader and give it both matrices as identity (see the
-	// comment on sIdentityMatrix above) -- so vertex positions pass through
-	// completely unchanged.
 	rsxLoadVertexProgram(gGcmContext, sVertexProgram, sVertexShaderCode);
 	rsxSetVertexProgramParameter(gGcmContext, sVertexProgram, sProjMatrixConst, sIdentityMatrix);
 	rsxSetVertexProgramParameter(gGcmContext, sVertexProgram, sModelViewMatrixConst, sIdentityMatrix);
 
-	// Lighting constants for the fragment shader. The shader no longer
-	// samples a texture (see simple.fcg) -- the final color comes straight
-	// from diffuse + globalAmbient + specular, so these values directly
-	// determine what color the squares end up.
 	static const f32 white[3] = { 1.0f, 1.0f, 1.0f };
 	static const f32 lightPosition[3] = { 0.0f, 0.0f, 5.0f };  // in front of every square
 	static const f32 noSpecularHighlight[3] = { 0.0f, 0.0f, 0.0f };
 	static const f32 shininess = 1.0f;
 
 	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sEyePositionConst, lightPosition, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
-	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sGlobalAmbientConst, white, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
 	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sLightPositionConst, lightPosition, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
 	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sLightColorConst, white, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
 	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sShininessConst, &shininess, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
-	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sDiffuseColorConst, white, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
 	rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sSpecularColorConst, noSpecularHighlight, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
 
-	rsxLoadFragmentProgramLocation(gGcmContext, sFragmentProgram, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
-
-	// Never called before in this project. If the user clip planes default
-	// to enabled with garbage plane equations, every fragment gets clipped
-	// and nothing ever reaches the screen.
 	rsxSetUserClipPlaneControl(gGcmContext,
 		GCM_USER_CLIP_PLANE_DISABLE, GCM_USER_CLIP_PLANE_DISABLE, GCM_USER_CLIP_PLANE_DISABLE,
 		GCM_USER_CLIP_PLANE_DISABLE, GCM_USER_CLIP_PLANE_DISABLE, GCM_USER_CLIP_PLANE_DISABLE);
 
-	// One draw call for however many cells are currently lit -- could be
-	// zero (nothing drawn, background stays black) up to
-	// screenMaxVertexCount (every cell lit).
-	if (visibleVertexCount > 0)
-		rsxDrawVertexArray(gGcmContext, GCM_TYPE_TRIANGLES, 0, visibleVertexCount);
+	f32 scaledColor[3];
+	for (u32 level = maxLevel; level >= 1; level--) {
+		if (levelCount[level] > 0) {
+			f32 brightness = (f32) level / (f32) maxLevel;
+			scaledColor[0] = scaledColor[1] = scaledColor[2] = brightness;
+			rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sDiffuseColorConst, scaledColor, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
+			rsxSetFragmentProgramParameter(gGcmContext, sFragmentProgram, sGlobalAmbientConst, scaledColor, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
+			rsxLoadFragmentProgramLocation(gGcmContext, sFragmentProgram, sFragmentShaderCodeOffset, GCM_LOCATION_RSX);
+			rsxDrawVertexArray(gGcmContext, GCM_TYPE_TRIANGLES, levelStart[level], levelCount[level]);
+		}
+		if (level == 1) break;  // u32 -- must not decrement past 0
+	}
 }

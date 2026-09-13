@@ -234,6 +234,9 @@ int main(void)
 		chip.pc = 0x200; // Start of most CHIP-8 programs
 		loadROM(ROM_LIST[selectedRom].path, chip);
 
+		static const u32 kMaxBrightness = 3; // frames a cell fades over after turning off
+		u8 sBrightness[64 * 32] = {};
+
 		bool prevSelect = false;
 		ioPadGetInfo(&padinfo);
 		for (int i = 0; i < MAX_PADS; i++) {
@@ -267,18 +270,23 @@ int main(void)
 				break; // skip simulating/rendering a frame we're about to leave
 			}
 
-			emulateCycle(chip);
-			emulateCycle(chip);
+			for (int cycle = 0; cycle < 3; cycle++) {
+				emulateCycle(chip);
+			}
 
 			// 60Hz timers, decremented once per rendered frame.
 			if (chip.delay_timer > 0) chip.delay_timer--;
 			if (chip.sound_timer > 0) chip.sound_timer--;
 			soundSetActive(chip.sound_timer > 0);
 
-			// Redrawn every frame regardless of drawFlag
-			// screenDraw() clears the framebuffer itself (via the GPU)
-			// before drawing, so no separate memset() is needed here like
-			screenDraw(chip.gfx, 64, 32, 0);
+			for (u32 i = 0; i < 64 * 32; i++) {
+				if (chip.gfx[i])
+					sBrightness[i] = kMaxBrightness;
+				else if (sBrightness[i] > 0)
+					sBrightness[i]--;
+			}
+
+			screenDraw(sBrightness, 64, 32, 0, kMaxBrightness);
 
 			chip.drawFlag = false;
 
