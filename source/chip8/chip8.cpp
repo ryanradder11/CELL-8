@@ -344,7 +344,9 @@ void emulateCycle(Chip8 &chip) {
         {
             uint8_t x = (opcode & 0x0F00) >> 8;
             uint8_t lowByte = opcode & 0x00FF;
-            opcode, lowByte, x, chip.V[x], (chip.V[x] < 16) ? chip.keypad[chip.V[x]] : 255);
+            if (debug)
+                printf("[Ex__] opcode=%x lowByte=%x (9E=skip-if-pressed, A1=skip-if-NOT-pressed) x=%d V[x]=%d keypad[V[x]]=%d\n",
+                       opcode, lowByte, x, chip.V[x], (chip.V[x] < 16) ? chip.keypad[chip.V[x]] : 255);
 
             if (lowByte == 0xA1) {
                 if (chip.V[x] < 16 && chip.keypad[chip.V[x]] != 1) {
